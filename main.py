@@ -40,7 +40,17 @@ class Chip8:
         n3 = (opcode & 0x00F0) >> 4
         n4 = opcode & 0x000F
 
-        self.pc += 2
+        if n1 == 0x1:
+            self.pc = (opcode & 0x0FFF)
+        else:
+            self.pc += 2
+
+        if n1 == 0xA:
+            self.I = opcode & 0x0FFF
+        
+
+
+        
 
         if self.delay_timer > 0:
             self.delay_timer -= 1
