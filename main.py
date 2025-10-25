@@ -1,14 +1,15 @@
 import time
 import random
-from pynput import keyboard
 import os
+from memory import Memory
+from display import Display
+from keyboard import Keyboard
 
 class Chip8:
-    def __init__(self, debug=False):
+    def __init__(self, memory, display, keyboard, debug=False):
         self.debug = debug
 
-        #memoria (4kbs)
-        self.memory = [0]*4096
+        self.memory = memory
 
         #registradores (varia de 0x0 ate 0xF)
         self.v = [0]*16
@@ -26,40 +27,11 @@ class Chip8:
         self.delay_timer = 0
         self.sound_timer = 0
 
-        #display 64x32
-        self.display = [[0] * 64 for _ in range(32)]
+        self.display = display
 
-        #registrador de teclas pressionadas
-        self.keys = [0]*16
+        self.keyboard = keyboard
 
         self.running = True
-
-        self._load_fontset()
-
-    def _load_fontset(self):
-        """Carrega o conjunto de fontes CHIP-8 na memória a partir do endereço 0x000."""
-        fontset = [
-            0xF0, 0x90, 0x90, 0x90, 0xF0,  # 0
-            0x20, 0x60, 0x20, 0x20, 0x70,  # 1
-            0xF0, 0x10, 0xF0, 0x80, 0xF0,  # 2
-            0xF0, 0x10, 0xF0, 0x10, 0xF0,  # 3
-            0x90, 0x90, 0xF0, 0x10, 0x10,  # 4
-            0xF0, 0x80, 0xF0, 0x10, 0xF0,  # 5
-            0xF0, 0x80, 0xF0, 0x90, 0xF0,  # 6
-            0xF0, 0x10, 0x20, 0x40, 0x40,  # 7
-            0xF0, 0x90, 0xF0, 0x90, 0xF0,  # 8
-            0xF0, 0x90, 0xF0, 0x10, 0xF0,  # 9
-            0xF0, 0x90, 0xF0, 0x90, 0x90,  # A
-            0xE0, 0x90, 0xE0, 0x90, 0xE0,  # B
-            0xF0, 0x80, 0x80, 0x80, 0xF0,  # C
-            0xE0, 0x90, 0x90, 0x90, 0xE0,  # D
-            0xF0, 0x80, 0xF0, 0x80, 0xF0,  # E
-            0xF0, 0x80, 0xF0, 0x80, 0x80   # F
-        ]
-        
-        for i, byte in enumerate(fontset):
-            self.memory[i] = byte
-
 
     def push(self, value):
         """
@@ -81,18 +53,6 @@ class Chip8:
         self.sp -= 1
         return value
 
-    def load_rom(self, file_name):
-        """
-        coloca na memoria as instruções da ROM apartir do indice 0x200
-        """
-        with open(file_name, 'rb') as f:
-            rom = f.read()
-        for i, byte in enumerate(rom):
-            self.memory[0x200+i] = byte
-        
-    def clear_screen(self):
-        self.display = [[0] * 64 for _ in range(32)]
-
     def log_opcode(self, opcode):
         """
         Adiciona o opcode atual e o PC (Program Counter) 
@@ -112,29 +72,9 @@ class Chip8:
             # Em caso de erro (permissão, etc.), exibe na tela para debug
             print(f"Erro ao escrever no log: {e}")
 
-
-    def render_display(self):
-        os.system('cls' if os.name == 'nt' else 'clear')
-        for y in range(32):
-            linha = ''.join('█' if self.display[y][x] else ' ' for x in range(64))
-            print(linha)
-
-    def draw_sprite(self, n, sprite, x, y):
-        for linha in range(n):
-                byte = sprite[linha]
-                for bit in range(8):
-                    pixel = (byte >> (7-bit)) & 1
-                    display_y = (self.v[y] + linha) % 32
-                    display_x = (self.v[x] + bit) % 64
-                    if pixel == 1:
-                        if self.display[display_y][display_x] == 1:
-                            self.v[0xF] = 1
-                        
-                        self.display[display_y][display_x] ^= 1
-
     def is_waiting_input(self, x):
         for i in range(16):
-            if self.keys[i] == 1:
+            if self.keyboard.is_pressed(i):
                 self.v[x] = i
                 return False
         return True
@@ -144,7 +84,7 @@ class Chip8:
         # Aqui unimos o byte mais significativo (self.memory[pc]) e o menos significativo (self.memory[pc + 1])
         # em um único valor de 16 bits, usando deslocamento de bits e OR bit a bit.
 
-        opcode = (self.memory[self.pc] << 8) | self.memory[self.pc + 1]
+        opcode = (self.memory.read(self.pc) << 8) | self.memory.read(self.pc+1)
 
         #aqui são separados em nibbles que são unidades menores para leitura
         n1 = (opcode & 0xF000) >> 12
@@ -259,27 +199,25 @@ class Chip8:
             self.v[x] = random.randint(0, 255) & kk 
 
         if n1 == 0xD:
-            self.v[0xF] = 0
-
             x = (opcode & 0x0F00) >> 8
             y = (opcode & 0x00F0) >> 4
             n = opcode & 0x000F
 
-            sprite = self.memory[self.I : self.I + n]
+            sprite = self.memory.read_in_range(self.I, n)
 
-            self.draw_sprite(n, sprite, x, y)
+            self.v[0xF] = self.display.draw_sprite(n, sprite, self.v[x], self.v[y])
                     
         if n1 == 0xE:
             x = (opcode & 0x0F00) >> 8
             instruction = (opcode & 0x00FF)
+            key_index = self.v[x] & 0xF
 
             if instruction == 0x9E:
-                key_index = self.v[x] & 0xF
-                if self.keys[key_index] == 1:
+                if self.keyboard.is_pressed(key_index):
                     self.pc += 2 
 
-            if instruction == 0xA1:
-                if self.keys[self.v[x]] == 0:
+            elif instruction == 0xA1:
+                if not self.keyboard.is_pressed(key_index):
                     self.pc += 2
 
         if n1 == 0xF:
@@ -308,17 +246,17 @@ class Chip8:
             
             if instruction == 0x33:
                 value = self.v[x]
-                self.memory[self.I] = (value // 100)
-                self.memory[self.I+1] = (value // 10) % 10
-                self.memory[self.I+2] = (value % 10)
+                self.memory.write((value // 100), self.I)
+                self.memory.write((value//10) % 10, self.I+1)
+                self.memory.write((value%10), self.I+2)
 
             if instruction == 0x55:
                 for i in range(x+1):
-                    self.memory[self.I+i] = self.v[i]
+                    self.memory.write(self.v[i], self.I+i)
             
             if instruction == 0x65:
                 for i in range(x+1):
-                    self.v[i] = self.memory[self.I + i]
+                    self.v[i] = self.memory.read(self.I+i)
 
         self.pc += 2
 
@@ -335,41 +273,22 @@ class Chip8:
             for _ in range(10):
                 self.cycle()
 
-            self.render_display()
+            self.display.render_display()
 
             self.decrement_delay()
 
             time.sleep(1/60)
 
-chip = Chip8()
+memory = Memory()
+display = Display()
+keyboard = Keyboard()
 
 
-key_map = {
-    '1': 0x1, '2': 0x2, '3': 0x3, '4': 0xC,
-    'q': 0x4, 'w': 0x5, 'e': 0x6, 'r': 0xD,
-    'a': 0x7, 's': 0x8, 'd': 0x9, 'f': 0xE,
-    'z': 0xA, 'x': 0x0, 'c': 0xB, 'v': 0xF
-}
 
-def on_press(key):
-    try:
-        k = key.char.lower()
-        if k in key_map:
-            chip.keys[key_map[k]] = 1
-    except AttributeError:
-        pass
+chip = Chip8(memory, display, keyboard)
 
-def on_release(key):
-    try:
-        k = key.char.lower()
-        if k in key_map:
-            chip.keys[key_map[k]] = 0
-    except AttributeError:
-        pass
+chip.keyboard.start()
 
-listener = keyboard.Listener(on_press=on_press, on_release=on_release)
-listener.start()
-
-chip.load_rom("games/MISSILE")
+chip.memory.load_rom("games/TETRIS")
 
 chip.run()
