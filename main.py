@@ -4,7 +4,9 @@ from pynput import keyboard
 import os
 
 class Chip8:
-    def __init__(self):
+    def __init__(self, debug=False):
+        self.debug = debug
+
         #memoria (4kbs)
         self.memory = [0]*4096
 
@@ -87,9 +89,29 @@ class Chip8:
             rom = f.read()
         for i, byte in enumerate(rom):
             self.memory[0x200+i] = byte
-    
+        
     def clear_screen(self):
         self.display = [[0] * 64 for _ in range(32)]
+
+    def log_opcode(self, opcode):
+        """
+        Adiciona o opcode atual e o PC (Program Counter) 
+        ao final do arquivo 'opcode_log.txt'.
+        """
+        # Formata o opcode e o PC em hexadecimal para melhor leitura
+        pc_hex = f"{self.pc - 2:04X}"  # PC - 2 porque ele já foi incrementado no fetch
+        opcode_hex = f"{opcode:04X}"
+        
+        log_entry = f"PC: {pc_hex} | Opcode: {opcode_hex}\n"
+
+        # Abre o arquivo em modo 'a' (append) e adiciona a linha
+        try:
+            with open("opcode_log.txt", "a") as f:
+                f.write(log_entry)
+        except Exception as e:
+            # Em caso de erro (permissão, etc.), exibe na tela para debug
+            print(f"Erro ao escrever no log: {e}")
+
 
     def render_display(self):
         os.system('cls' if os.name == 'nt' else 'clear')
@@ -97,7 +119,27 @@ class Chip8:
             linha = ''.join('█' if self.display[y][x] else ' ' for x in range(64))
             print(linha)
 
-    def cycle(self):
+    def draw_sprite(self, n, sprite, x, y):
+        for linha in range(n):
+                byte = sprite[linha]
+                for bit in range(8):
+                    pixel = (byte >> (7-bit)) & 1
+                    display_y = (self.v[y] + linha) % 32
+                    display_x = (self.v[x] + bit) % 64
+                    if pixel == 1:
+                        if self.display[display_y][display_x] == 1:
+                            self.v[0xF] = 1
+                        
+                        self.display[display_y][display_x] ^= 1
+
+    def is_waiting_input(self, x):
+        for i in range(16):
+            if self.keys[i] == 1:
+                self.v[x] = i
+                return False
+        return True
+
+    def cycle(self):        
         # Cada instrução (opcode) do CHIP-8 ocupa 2 bytes.
         # Aqui unimos o byte mais significativo (self.memory[pc]) e o menos significativo (self.memory[pc + 1])
         # em um único valor de 16 bits, usando deslocamento de bits e OR bit a bit.
@@ -109,6 +151,10 @@ class Chip8:
         n2 = (opcode & 0x0F00) >> 8
         n3 = (opcode & 0x00F0) >> 4
         n4 = opcode & 0x000F
+
+        #debug
+        if self.debug:
+            self.log_opcode(opcode)
 
         #implementação das instruções
         if opcode == 0x00E0:
@@ -218,22 +264,15 @@ class Chip8:
             x = (opcode & 0x0F00) >> 8
             y = (opcode & 0x00F0) >> 4
             n = opcode & 0x000F
+
             sprite = self.memory[self.I : self.I + n]
-            for linha in range(n):
-                byte = sprite[linha]
-                for bit in range(8):
-                    pixel = (byte >> (7-bit)) & 1
-                    display_y = (self.v[y] + linha) % 32
-                    display_x = (self.v[x] + bit) % 64
-                    if pixel == 1:
-                        if self.display[display_y][display_x] == 1:
-                            self.v[0xF] = 1
-                        
-                        self.display[display_y][display_x] ^= 1
+
+            self.draw_sprite(n, sprite, x, y)
                     
         if n1 == 0xE:
             x = (opcode & 0x0F00) >> 8
             instruction = (opcode & 0x00FF)
+
             if instruction == 0x9E:
                 key_index = self.v[x] & 0xF
                 if self.keys[key_index] == 1:
@@ -246,20 +285,14 @@ class Chip8:
         if n1 == 0xF:
             x = (opcode & 0x0F00) >> 8
             instruction = (opcode & 0x00FF)
+
             if instruction == 0x07:
                 self.v[x] = self.delay_timer
             
             if instruction == 0x0A:
-                #0x0A espera um input pra ir para proxima instrução
-                #então so deixamos passar desse ponto se a tecla esperada estiver pressionada
-                pressed = False
-                for i in range(16):
-                    if self.keys[i] == 1:
-                        pressed = True
-                        self.v[x] = i
-                        break
-                if not pressed:
-                    return
+                if self.is_waiting_input(x):
+                    return #evita o avanço do program counter mantendo na instrução atual 
+                
             
             if instruction == 0x15:
                 self.delay_timer = self.v[x]
@@ -287,9 +320,14 @@ class Chip8:
                 for i in range(x+1):
                     self.v[i] = self.memory[self.I + i]
 
-        
-        
         self.pc += 2
+
+    def decrement_delay(self):
+        if self.delay_timer > 0:
+            self.delay_timer -= 1
+
+        if self.sound_timer > 0:
+            self.sound_timer -= 1
 
     def run(self):
         while self.running:
@@ -297,15 +335,9 @@ class Chip8:
             for _ in range(10):
                 self.cycle()
 
-            #renderizar na tela a 60hz
             self.render_display()
 
-            #decremento dos delayers a 60hz
-            if self.delay_timer > 0:
-                self.delay_timer -= 1
-
-            if self.sound_timer > 0:
-                self.sound_timer -= 1
+            self.decrement_delay()
 
             time.sleep(1/60)
 
@@ -338,7 +370,6 @@ def on_release(key):
 listener = keyboard.Listener(on_press=on_press, on_release=on_release)
 listener.start()
 
-chip.load_rom("MISSILE")
-
+chip.load_rom("games/MISSILE")
 
 chip.run()
