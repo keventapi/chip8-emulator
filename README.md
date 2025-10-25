@@ -134,4 +134,4 @@ n4 = opcode & 0x000F
 - Cada frame processa 10 ciclos de instrução.
 - Renderiza a tela a 60 Hz.
 - Decrementa `delay_timer` e `sound_timer` a 60 Hz.
-- Adiciona um `sleep(1/
+- Adiciona um `sleep(1/60)`
