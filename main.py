@@ -1,13 +1,15 @@
 import time
+import random
+from pynput import keyboard
+import os
+
 
 class Chip8:
     def __init__(self):
         self.memory = [0]*4096
 
-        #registrador de 8 bits
         self.v = [0]*16
 
-        #registrador de endereço
         self.I = 0
 
         self.pc = 0x200
@@ -25,18 +27,16 @@ class Chip8:
         self.running = True
 
     def push(self):
-        if self.sp >= 15:
+        if self.sp >= len(self.stack):
             raise Exception("stack overflow")
-        
+        self.stack[self.sp] = self.pc
         self.sp += 1
-        self.stack[self.sp] = self.pc+2 #transformar self.pc em parametro depois
 
     def pop(self):
-        if self.sp < 0:
+        if self.sp == 0:
             raise Exception("stack underflow")
-        top = self.stack[self.sp]
         self.sp -= 1
-        return top
+        return self.stack[self.sp]
 
     def load_rom(self, file_name):
         with open(file_name, 'rb') as f:
@@ -45,7 +45,13 @@ class Chip8:
             self.memory[0x200+i] = byte
         
     def clear_screen(self):
-        pass
+        self.display = [[0] * 64 for _ in range(32)]
+
+    def render_display(self):
+        os.system('cls' if os.name == 'nt' else 'clear')
+        for y in range(32):
+            linha = ''.join('█' if self.display[y][x] else ' ' for x in range(64))
+            print(linha)
 
     def cycle(self):
         opcode = (self.memory[self.pc] << 8) | self.memory[self.pc + 1]
@@ -64,11 +70,11 @@ class Chip8:
         if n1 == 0x1:
             self.pc = (opcode & 0x0FFF)
             return
-        
 
         if n1 == 0x2:
             self.push()
             self.pc = (opcode & 0x0FFF)
+            return
             
         if n1 == 0x3:
             x = (opcode & 0x0F00) >> 8
@@ -138,12 +144,96 @@ class Chip8:
                 self.v[0xF] = msb
                 self.v[x] = (self.v[x] << 1) & 0xFF
 
+        if n1 == 0x9:
+            x = (opcode & 0x0F00) >> 8
+            y = (opcode & 0x00F0) >> 4
+            if self.v[x] != self.v[y]:
+                self.pc += 2
+
         if n1 == 0xA:
             self.I = opcode & 0x0FFF
         
+        if n1 == 0xB:
+            self.pc = ((opcode & 0x0FFF) + self.v[0]) & 0x0FFF 
 
+        if n1 == 0xC:
+            x = (opcode & 0x0F00) >> 8
+            kk = (opcode & 0x00FF)
+            self.v[x] = random.randint(0, 255) & kk 
 
-        
+        if n1 == 0xD:
+            self.v[0xF] = 0
+
+            x = (opcode & 0x0F00) >> 8
+            y = (opcode & 0x00F0) >> 4
+            n = opcode & 0x000F
+            sprite = self.memory[self.I : self.I + n]
+            for linha in range(n):
+                byte = sprite[linha]
+                for bit in range(8):
+                    pixel = (byte >> (7-bit)) & 1
+                    display_y = (self.v[y] + linha) % 32
+                    display_x = (self.v[x] + bit) % 64
+                    if pixel == 1:
+                        if self.display[display_y][display_x] == 1:
+                            self.v[0xF] = 1
+                        
+                        self.display[display_y][display_x] ^= 1
+                    
+        if n1 == 0xE:
+            x = (opcode & 0x0F00) >> 8
+            instruction = (opcode & 0x00FF)
+            if instruction == 0x9E:
+                key_index = self.v[x] & 0xF
+                if self.keys[key_index] == 1:
+                    self.pc += 2 
+
+            if instruction == 0xA1:
+                if self.keys[self.v[x]] == 0:
+                    self.pc += 2
+
+        if n1 == 0xF:
+            x = (opcode & 0x0F00) >> 8
+            instruction = (opcode & 0x00FF)
+            if instruction == 0x07:
+                self.v[x] = self.delay_timer
+            
+            if instruction == 0x0A:
+                pressed = False
+                for i in range(16):
+                    if self.keys[i] == 1:
+                        pressed = True
+                        self.v[x] = i
+                        break
+                
+                if not pressed:
+                    return
+            
+            if instruction == 0x15:
+                self.delay_timer = self.v[x]
+            
+            if instruction == 0x18:
+                self.sound_timer = self.v[x]
+            
+            if instruction == 0x1E:
+                self.I = (self.I + self.v[x]) & 0x0FFF
+
+            if instruction == 0x29:
+                self.I = self.v[x] * 5
+            
+            if instruction == 0x33:
+                value = self.v[x]
+                self.memory[self.I] = (value // 100)
+                self.memory[self.I+1] = (value // 10) % 10
+                self.memory[self.I+2] = (value % 10)
+
+            if instruction == 0x55:
+                for i in range(x+1):
+                    self.memory[self.I+i] = self.v[i]
+            
+            if instruction == 0x65:
+                for i in range(x+1):
+                    self.v[i] = self.memory[self.I + i]
 
         if self.delay_timer > 0:
             self.delay_timer -= 1
@@ -153,23 +243,42 @@ class Chip8:
         
         self.pc += 2
 
-        print(f"PC: {self.pc - 2:03X}, Opcode: {opcode:04X}")
-
     def run(self):
         while self.running:
-            self.cycle()
-            time.sleep(1/500)
-
-
-
-rom_test = bytes([0xA2, 0xF0, 0x60, 0x0C])
-
-# salvar num arquivo temporário
-with open("test.rom", "wb") as f:
-    f.write(rom_test)
+            for _ in range(150):
+                self.cycle()
+            self.render_display()
+            time.sleep(1/30)
 
 chip = Chip8()
-chip.load_rom("test.rom")
 
-for _ in range(4):
-    chip.cycle()
+
+key_map = {
+    '1': 0x1, '2': 0x2, '3': 0x3, '4': 0xC,
+    'q': 0x4, 'w': 0x5, 'e': 0x6, 'r': 0xD,
+    'a': 0x7, 's': 0x8, 'd': 0x9, 'f': 0xE,
+    'z': 0xA, 'x': 0x0, 'c': 0xB, 'v': 0xF
+}
+
+def on_press(key):
+    try:
+        k = key.char.lower()
+        if k in key_map:
+            chip.keys[key_map[k]] = 1
+    except AttributeError:
+        pass
+
+def on_release(key):
+    try:
+        k = key.char.lower()
+        if k in key_map:
+            chip.keys[key_map[k]] = 0
+    except AttributeError:
+        pass
+
+listener = keyboard.Listener(on_press=on_press, on_release=on_release)
+listener.start()
+
+chip.load_rom("MISSILE")
+
+chip.run()
